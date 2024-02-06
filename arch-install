@@ -1,0 +1,107 @@
+#!/bin/bash
+
+# Personal configuration
+USERNAME="paul"
+HOSTNAME="archlinux"
+ROOT_PASSWORD="8842"
+USER_PASSWORD="8842"
+TIMEZONE="Europe/Berlin"
+LOCALE="de_DE.UTF-8"
+
+# WiFi Configuration
+echo "Choose WiFi network:"
+echo "1. bakenfritz"
+echo "2. bakenfratz"
+echo "3. Baul"
+echo "4. Custom"
+
+read -p "Enter your choice (1-4): " wifi_choice
+
+case $wifi_choice in
+    1)
+        SSID="bakenfritz"
+        PASSWORD="11941866931729140395"
+        ;;
+    2)
+        SSID="bakenfratz"
+        PASSWORD="11941866931729140395"
+        ;;
+    3)
+        SSID="Baul"
+        PASSWORD="11111111"
+        ;;
+    4)
+        read -p "Enter custom SSID: " SSID
+        read -p "Enter custom WiFi password: " PASSWORD
+        ;;
+    *)
+        echo "Invalid choice. Exiting."
+        exit 1
+        ;;
+esac
+
+# Ensure UEFI mode
+ls /sys/firmware/efi/efivars || (echo "Please boot in UEFI mode"; exit 1)
+
+# Update system clock
+timedatectl set-ntp true
+
+# Partitioning
+parted /dev/nvme0n1 mklabel gpt
+parted /dev/nvme0n1 mkpart primary fat32 1M 512MB
+parted /dev/nvme0n1 set 1 boot on
+parted /dev/nvme0n1 mkpart primary ext4 512MB 100%
+parted /dev/nvme0n1 mkpart primary linux-swap 100% -6GB
+mkfs.fat -F32 /dev/nvme0n1p1
+mkfs.ext4 /dev/nvme0n1p2
+mkswap /dev/nvme0n1p3
+swapon /dev/nvme0n1p3
+
+# Mount the root partition
+mount /dev/nvme0n1p2 /mnt
+
+# WiFi Configuration
+iwctl station wlan0 connect "$SSID"
+
+# base packages
+pacstrap /mnt base base-devel linux linux-firmware git
+
+# Generate fstab
+genfstab -U /mnt >> /mnt/etc/fstab
+
+# Chroot into the installed system
+arch-chroot /mnt
+
+# Localization
+ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
+hwclock --systohc
+echo "$LOCALE" > /etc/locale.gen
+locale-gen
+echo "LANG=$LOCALE" > /etc/locale.conf
+
+# host configuration
+echo "$HOSTNAME" > /etc/hostname
+echo "127.0.0.1 localhost" >> /etc/hosts
+echo "::1 localhost" >> /etc/hosts
+echo "127.0.1.1 $HOSTNAME.localdomain $HOSTNAME" >> /etc/hosts
+
+# user configuration
+echo "root:$ROOT_PASSWORD" | chpasswd
+useradd -m -G wheel -s /bin/bash "$USERNAME"
+echo "$USERNAME:$USER_PASSWORD" | chpasswd
+echo "%wheel ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+# bootloader
+pacman -S grub efibootmgr
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB
+grub-mkconfig -o /boot/grub/grub.cfg
+
+systemctl enable NetworkManager
+pacman -S plasma kde-applications xorg zsh git go
+read -p "Enter additional packages (space-separated): " additional_packages
+pacman -S $additional_packages
+
+# exiting
+exit
+umount -R /mnt
+reboot
